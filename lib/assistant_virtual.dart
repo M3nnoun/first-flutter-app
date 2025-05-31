@@ -1,19 +1,23 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:mon_app/drawer.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
-import 'package:flutter_markdown/flutter_markdown.dart'; // Add this import
+import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:image_picker/image_picker.dart';
 
 class ChatMessage {
-  final String text;
+  final String? text;
+  final Uint8List? imageBytes;
   final bool isUser;
   final DateTime timestamp;
   final bool isProcessing;
 
   ChatMessage({
-    required this.text,
+    this.text,
+    this.imageBytes,
     required this.isUser,
     required this.timestamp,
     this.isProcessing = false,
@@ -29,6 +33,7 @@ class AssistantVirtual extends StatefulWidget {
 
 class _AssistantVirtualState extends State<AssistantVirtual> {
   final SpeechToText _speechToText = SpeechToText();
+  final ImagePicker _imagePicker = ImagePicker();
   bool _speechEnabled = false;
   bool _isListening = false;
   final List<ChatMessage> _messages = [];
@@ -37,9 +42,10 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
   late final GenerativeModel _model;
   bool _isGeminiInitialized = false;
   bool _isSending = false;
+  Uint8List? _pendingImageBytes;
 
   // Replace with your actual Gemini API key
-  static const String _apiKey = 'AIzaSyCHYpwO';
+  static const String _apiKey = 'AIz';
 
   @override
   void initState() {
@@ -51,8 +57,9 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
 
   void _initGemini() {
     try {
+      // Use vision model for image understanding
       _model = GenerativeModel(
-        model: 'gemini-2.0-flash',
+        model: 'gemini-1.5-flash',
         apiKey: _apiKey,
         generationConfig: GenerationConfig(
           temperature: 0.9,
@@ -76,7 +83,7 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
 
   void _addWelcomeMessage() {
     _messages.add(ChatMessage(
-      text: 'Hello! I\'m your AI assistant. How can I help you today?',
+      text: 'Hello! I\'m your AI assistant. You can upload images and ask questions about them!',
       isUser: false,
       timestamp: DateTime.now(),
     ));
@@ -139,7 +146,7 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
       setState(() => _messages.removeLast());
     } else if (_messages.isNotEmpty && _messages.last.isUser) {
       // Process the last user message
-      _processMessage(_messages.last.text);
+      _processMessage(_messages.last.text, _pendingImageBytes);
     }
   }
 
@@ -165,23 +172,48 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
     }
   }
 
-  void _handleTextSubmit() {
-    final text = _textController.text.trim();
-    if (text.isNotEmpty) {
-      setState(() {
-        _messages.add(ChatMessage(
-          text: text,
-          isUser: true,
-          timestamp: DateTime.now(),
-        ));
-        _textController.clear();
-        _scrollToBottom();
-      });
-      _processMessage(text);
+  Future<void> _pickImage() async {
+    try {
+      final XFile? image = await _imagePicker.pickImage(source: ImageSource.gallery);
+      if (image == null) return;
+      
+      final bytes = await image.readAsBytes();
+      setState(() => _pendingImageBytes = bytes);
+      _showSnackBar('Image selected. Add a question and press send');
+      
+    } catch (e) {
+      print('Image picker error: $e');
+      _showSnackBar('Failed to pick image: ${e.toString()}');
     }
   }
 
-  Future<void> _processMessage(String message) async {
+  void _clearPendingImage() {
+    setState(() => _pendingImageBytes = null);
+  }
+
+  void _handleTextSubmit() {
+    final text = _textController.text.trim();
+    if (text.isEmpty && _pendingImageBytes == null) {
+      _showSnackBar('Please enter a message or select an image');
+      return;
+    }
+
+    setState(() {
+      _messages.add(ChatMessage(
+        text: text,
+        imageBytes: _pendingImageBytes,
+        isUser: true,
+        timestamp: DateTime.now(),
+      ));
+      _textController.clear();
+      _scrollToBottom();
+    });
+    
+    _processMessage(text, _pendingImageBytes);
+    _clearPendingImage();
+  }
+
+  Future<void> _processMessage(String? userText, Uint8List? imageBytes) async {
     if (!_isGeminiInitialized) {
       _showSnackBar('AI assistant is not ready yet');
       return;
@@ -195,7 +227,7 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
     setState(() {
       _isSending = true;
       _messages.add(ChatMessage(
-        text: 'Thinking...',
+        text: 'Analyzing...',
         isUser: false,
         timestamp: DateTime.now(),
         isProcessing: true,
@@ -204,15 +236,35 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
     });
 
     try {
-      final content = [Content.text(message)];
+      final List<Content> content = [];
+      
+      // Add text if available
+      if (userText?.isNotEmpty == true) {
+        content.add(Content.text(userText!));
+      }
+      
+      // Add image if available
+      if (imageBytes != null) {
+        final parts = <Part>[
+          DataPart('image/jpeg', imageBytes),
+        ];
+        
+        // Add default prompt if no text provided
+        if (userText?.isEmpty == true) {
+          parts.add(TextPart('What\'s in this image?'));
+        }
+        
+        content.add(Content.multi(parts));
+      }
+
       final response = await _model.generateContent(content);
-      final text = response.text ?? "Sorry, I couldn't generate a response.";
+      final responseText = response.text ?? "Sorry, I couldn't generate a response.";
 
       setState(() {
         _isSending = false;
-        _messages.removeLast(); // Remove "Thinking..." message
+        _messages.removeLast(); // Remove "Analyzing..." message
         _messages.add(ChatMessage(
-          text: text,
+          text: responseText,
           isUser: false,
           timestamp: DateTime.now(),
         ));
@@ -222,7 +274,7 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
       print('Gemini API error: $e');
       setState(() {
         _isSending = false;
-        _messages.removeLast(); // Remove "Thinking..." message
+        _messages.removeLast(); // Remove "Analyzing..." message
         _messages.add(ChatMessage(
           text: 'Error: ${e.toString()}',
           isUser: false,
@@ -255,7 +307,7 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text("Virtual Assistant"),
+        title: const Text("Visual Assistant"),
         actions: [
           IconButton(
             icon: const Icon(Icons.info_outline),
@@ -264,7 +316,8 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
               builder: (context) => AlertDialog(
                 title: const Text('AI Assistant'),
                 content: const Text('This assistant uses Google Gemini AI to answer your questions. '
-                    'You can type or speak your questions. Responses are formatted with markdown.'),
+                    'You can upload images and ask questions about them. '
+                    'Responses are formatted with markdown.'),
                 actions: [
                   TextButton(
                     onPressed: () => Navigator.pop(context),
@@ -318,25 +371,40 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // Show image if present
+            if (message.imageBytes != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.memory(
+                    message.imageBytes!,
+                    width: 200,
+                    height: 150,
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+            
+            // Show text or processing indicator
             if (message.isProcessing)
               const Row(
                 children: [
                   SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)),
                   SizedBox(width: 8),
-                  Text('Thinking...', style: TextStyle(fontStyle: FontStyle.italic)),
+                  Text('Analyzing...', style: TextStyle(fontStyle: FontStyle.italic)),
                 ],
               )
-            else if (isUser)
+            else if (message.text != null && isUser)
               Text(
-                message.text,
+                message.text!,
                 style: TextStyle(
                   color: Colors.blue[900],
                 ),
               )
-            else
-              // Render markdown for assistant responses
+            else if (message.text != null && !isUser)
               MarkdownBody(
-                data: message.text,
+                data: message.text!,
                 styleSheet: MarkdownStyleSheet(
                   p: const TextStyle(fontSize: 16, color: Colors.black87),
                   strong: const TextStyle(fontWeight: FontWeight.bold),
@@ -357,30 +425,6 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
                   ),
                   listBullet: const TextStyle(fontSize: 16),
                 ),
-                onTapLink: (text, href, title) {
-                  if (href != null) {
-                    showDialog(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: const Text('Open Link?'),
-                        content: Text('Do you want to open $href?'),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: const Text('Cancel'),
-                          ),
-                          TextButton(
-                            onPressed: () {
-                              Navigator.pop(context);
-                              // Implement link opening logic here
-                            },
-                            child: const Text('Open'),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
-                },
               ),
             const SizedBox(height: 4),
             Text(
@@ -409,43 +453,83 @@ class _AssistantVirtualState extends State<AssistantVirtual> {
           ),
         ],
       ),
-      child: Row(
+      child: Column(
         children: [
-          IconButton(
-            icon: Icon(
-              _isListening ? Icons.mic_off : Icons.mic,
-              color: _isListening ? Colors.red : Colors.blue,
+          // Pending image preview
+          if (_pendingImageBytes != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Stack(
+                alignment: Alignment.topRight,
+                children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.memory(
+                      _pendingImageBytes!,
+                      width: double.infinity,
+                      height: 150,
+                      fit: BoxFit.cover,
+                    ),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.red),
+                    onPressed: _clearPendingImage,
+                  ),
+                ],
+              ),
             ),
-            onPressed: () {
-              if (_isListening) {
-                _stopListening();
-              } else {
-                _startListening();
-              }
-            },
-          ),
-          Expanded(
-            child: TextField(
-              controller: _textController,
-              decoration: InputDecoration(
-                hintText: 'Type your message...',
-                border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(24),
-                  borderSide: BorderSide.none,
+          
+          Row(
+            children: [
+              // Image picker button
+              IconButton(
+                icon: const Icon(Icons.image),
+                color: Colors.blue,
+                onPressed: _pickImage,
+              ),
+              
+              // Microphone button
+              IconButton(
+                icon: Icon(
+                  _isListening ? Icons.mic_off : Icons.mic,
+                  color: _isListening ? Colors.red : Colors.blue,
                 ),
-                filled: true,
-                fillColor: Colors.grey[200],
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
+                onPressed: () {
+                  if (_isListening) {
+                    _stopListening();
+                  } else {
+                    _startListening();
+                  }
+                },
+              ),
+              
+              // Text input field
+              Expanded(
+                child: TextField(
+                  controller: _textController,
+                  decoration: InputDecoration(
+                    hintText: 'Type your message or ask about an image...',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor: Colors.grey[200],
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 12,
+                    ),
+                  ),
+                  onSubmitted: (_) => _handleTextSubmit(),
                 ),
               ),
-              onSubmitted: (_) => _handleTextSubmit(),
-            ),
-          ),
-          IconButton(
-            icon: Icon(Icons.send, color: _isSending ? Colors.grey : Colors.blue),
-            onPressed: _isSending ? null : _handleTextSubmit,
+              
+              // Send button
+              IconButton(
+                icon: Icon(Icons.send, color: _isSending ? Colors.grey : Colors.blue),
+                onPressed: _isSending ? null : _handleTextSubmit,
+              ),
+            ],
           ),
         ],
       ),
