@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'assistant_virtual.dart'; // Import de la page Assistant Virtual
+import 'image_generator_screen.dart';
 
 class Menu extends StatelessWidget {
   const Menu({super.key});
@@ -69,6 +70,20 @@ class Menu extends StatelessWidget {
             },
           ),
 
+           // Add new Image Generator item
+          ListTile(
+            leading: Icon(Icons.image_outlined), // New icon for image generation
+            title: Text('AI Image Generator'),
+            onTap: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (context) => const ImageGeneratorScreen(),
+                ),
+              );
+            },
+          ),
           // Traitement des objets (first one)
           ListTile(
             leading: Icon(Icons.tune), // Replaced icon (e.g., tuning/processing)

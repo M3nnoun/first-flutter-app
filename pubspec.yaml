@@ -43,6 +43,7 @@ dependencies:
   flutter_dotenv: ^5.1.0 # For securely managing API key
   flutter_markdown: ^0.6.15
   image_picker: ^1.0.7
+  path_provider: ^2.1.1
 
 dev_dependencies:
   flutter_test:
